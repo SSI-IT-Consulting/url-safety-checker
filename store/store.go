@@ -21,7 +21,16 @@ const (
 )
 
 func Connect() (*gorm.DB, *redis.Client) {
+	db := ConnectDB()
+	rdb := ConnectRedis()
+
+	pterm.Success.Println("redis connected successfully ...")
+	return db, rdb
+}
+
+func ConnectDB() *gorm.DB {
 	dsn := os.Getenv("DB_URL")
+
 	pterm.Info.Printf("connecting to postgres = \"%v\"\n", dsn)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
@@ -32,18 +41,16 @@ func Connect() (*gorm.DB, *redis.Client) {
 	db.AutoMigrate(&models.HashEntries{})
 
 	pterm.Success.Println("database connected successfully ...")
+	return db
+}
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS_URL"),
-		Username: os.Getenv("REDIS_USERNAME"),
-		Password: os.Getenv("REDIS_PASSWORD"),
-		DB:       GetEnvInt("REDIS_DB"),
-	})
+func ConnectRedis() *redis.Client {
+	var ctx = context.Background()
+	opt, _ := redis.ParseURL(os.Getenv("REDIS_URL"))
+	rdb := redis.NewClient(opt)
 
-	_, err = rdb.Ping(context.Background()).Result()
-	if err != nil {
-		log.Fatal("error connecting to redis ...")
-	}
+	rdb.Set(ctx, "foo", "bar", 0)
+	rdb.Get(ctx, "foo")
 
 	rdb.SetNX(rdb.Context(), IDX, "0", 0)
 	rdb.SetNX(rdb.Context(), StateMalware, "", 0)
@@ -51,7 +58,8 @@ func Connect() (*gorm.DB, *redis.Client) {
 	rdb.SetNX(rdb.Context(), StateUnwantedSoftware, "", 0)
 
 	pterm.Success.Println("redis connected successfully ...")
-	return db, rdb
+
+	return rdb
 }
 
 func GetEnvInt(key string) int {
