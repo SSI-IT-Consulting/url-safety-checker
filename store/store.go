@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"log"
 	"os"
 	"strconv"
@@ -31,8 +30,6 @@ func Connect() (*gorm.DB, *redis.Client) {
 func ConnectDB() *gorm.DB {
 	dsn := os.Getenv("DB_URL")
 
-	pterm.Info.Printf("connecting to postgres = \"%v\"\n", dsn)
-
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatal("error connecting to database ...")
@@ -45,12 +42,8 @@ func ConnectDB() *gorm.DB {
 }
 
 func ConnectRedis() *redis.Client {
-	var ctx = context.Background()
 	opt, _ := redis.ParseURL(os.Getenv("REDIS_URL"))
 	rdb := redis.NewClient(opt)
-
-	rdb.Set(ctx, "foo", "bar", 0)
-	rdb.Get(ctx, "foo")
 
 	rdb.SetNX(rdb.Context(), IDX, "0", 0)
 	rdb.SetNX(rdb.Context(), StateMalware, "", 0)

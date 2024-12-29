@@ -12,8 +12,6 @@ import (
 )
 
 func main() {
-	pterm.DefaultSection.Println("URL Safety Checker")
-
 	config.LoadConfig()
 	db, rdb := store.Connect()
 
@@ -24,7 +22,10 @@ func main() {
 
 	router.POST("api/check-url", controllers.CheckURLSafety(db, rdb))
 
-	serverAddr := os.Getenv("SERVER_ADDR")
-	pterm.Info.Printf("server running on %s ...", serverAddr)
-	router.Run(serverAddr)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	router.Run("0.0.0.0:" + port)
 }
