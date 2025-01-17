@@ -36,6 +36,7 @@ func main() {
 	sqlDB.SetConnMaxLifetime(MAX_CONN_LIFETIME * time.Minute)
 	defer sqlDB.Close()
 
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 
 	router.POST("api/check-url", controllers.CheckURLSafety(db, rdb))

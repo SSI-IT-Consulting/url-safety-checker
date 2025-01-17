@@ -51,18 +51,18 @@ func ConnectDB() *gorm.DB {
 
 func ConnectRedis() *redis.Client {
 	opt, _ := redis.ParseURL(os.Getenv("REDIS_URL"))
-	rdb := redis.NewClient(opt)
-	// rdb := redis.NewClient(&redis.Options{
-	// 	Addr:         opt.Addr,
-	// 	Password:     opt.Password,
-	// 	DB:           opt.DB,
-	// 	PoolSize:     PoolSize,
-	// 	MinIdleConns: MinIdleConns,
-	// 	IdleTimeout:  IdleTimeout,
-	// 	DialTimeout:  DialTimeout,
-	// 	ReadTimeout:  ReadTimeout,
-	// 	WriteTimeout: WriteTimeout,
-	// })
+	// rdb := redis.NewClient(opt)
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         opt.Addr,
+		Password:     opt.Password,
+		DB:           opt.DB,
+		PoolSize:     PoolSize,
+		MinIdleConns: MinIdleConns,
+		IdleTimeout:  IdleTimeout,
+		DialTimeout:  DialTimeout,
+		ReadTimeout:  ReadTimeout,
+		WriteTimeout: WriteTimeout,
+	})
 
 	rdb.SetNX(rdb.Context(), IDX, "0", 0)
 	rdb.SetNX(rdb.Context(), StateMalware, "", 0)
