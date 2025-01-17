@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/minodr/url-safety-checker.git/models"
@@ -17,13 +18,20 @@ const (
 	StateMalware           = "state:MALWARE"
 	StateSocialEngineering = "state:SOCIAL_ENGINEERING"
 	StateUnwantedSoftware  = "state:UNWANTED_SOFTWARE"
+
+	// For redis
+	PoolSize     = 50               // Maximum connections in the pool
+	MinIdleConns = 10               // Minimum idle connections
+	IdleTimeout  = 50 * time.Minute // Idle timeout for connections
+	DialTimeout  = 50 * time.Second // Connection dial timeout
+	ReadTimeout  = 30 * time.Second // Read timeout
+	WriteTimeout = 30 * time.Second // Write timeout
 )
 
 func Connect() (*gorm.DB, *redis.Client) {
 	db := ConnectDB()
 	rdb := ConnectRedis()
 
-	pterm.Success.Println("redis connected successfully ...")
 	return db, rdb
 }
 
@@ -44,6 +52,17 @@ func ConnectDB() *gorm.DB {
 func ConnectRedis() *redis.Client {
 	opt, _ := redis.ParseURL(os.Getenv("REDIS_URL"))
 	rdb := redis.NewClient(opt)
+	// rdb := redis.NewClient(&redis.Options{
+	// 	Addr:         opt.Addr,
+	// 	Password:     opt.Password,
+	// 	DB:           opt.DB,
+	// 	PoolSize:     PoolSize,
+	// 	MinIdleConns: MinIdleConns,
+	// 	IdleTimeout:  IdleTimeout,
+	// 	DialTimeout:  DialTimeout,
+	// 	ReadTimeout:  ReadTimeout,
+	// 	WriteTimeout: WriteTimeout,
+	// })
 
 	rdb.SetNX(rdb.Context(), IDX, "0", 0)
 	rdb.SetNX(rdb.Context(), StateMalware, "", 0)
