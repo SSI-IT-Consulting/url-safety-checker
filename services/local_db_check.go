@@ -1,50 +1,34 @@
 package services
 
 import (
-	"github.com/go-redis/redis/v8"
-	"github.com/minodr/url-safety-checker.git/models"
-	"github.com/minodr/url-safety-checker.git/utils"
-	"github.com/pterm/pterm"
+	"context"
+
+	"github.com/SSI-IT-Consulting/url-safety-checker.git/models"
 	"gorm.io/gorm"
 )
 
-func CheckIfHashExistsInCache(db *gorm.DB, rdb *redis.Client, prefixes map[string]string) (map[string]bool, error) {
-	var prefixHashes []string
-	for _, prefix := range prefixes {
-		prefixHashes = append(prefixHashes, prefix)
+func CheckIfPrefixExistsInDb(ctx context.Context, db *gorm.DB, prefixes []string, safeSoFar []string) ([]string, map[string]string, error) {
+	var fromDb []models.HashEntries
+	if err := db.Where("prefix_hash IN ?", prefixes).
+		Find(&fromDb).Error; err != nil {
+		return nil, nil, err
 	}
 
-	prefixHashesInterface := utils.StringSliceToInterface(prefixHashes)
-
-	exists, err := rdb.SMIsMember(rdb.Context(),
-		"prefixHashes", prefixHashesInterface...).Result()
-	if err != nil {
-		pterm.Error.Println(err)
-		return nil, err
+	existsInDb := make(map[string]bool)
+	for _, hash := range fromDb {
+		existsInDb[hash.PrefixHash] = true
 	}
 
-	existingHashes := make(map[string]bool, len(prefixes))
-	var toLocalCheckPrefixes []string
+	safeUrls := make([]string, 0)
+	unsafePrefixes := make(map[string]string)
 
-	for i, exist := range exists {
-		existingHashes[prefixHashes[i]] = exist
-		if !exist {
-			toLocalCheckPrefixes = append(toLocalCheckPrefixes, prefixHashes[i])
+	for i, fullHash := range safeSoFar {
+		if existsInDb[prefixes[i]] {
+			unsafePrefixes[prefixes[i]] = fullHash
+		} else {
+			safeUrls = append(safeUrls, fullHash)
 		}
 	}
 
-	var hashEntries []models.HashEntries
-	if len(toLocalCheckPrefixes) > 0 {
-		if err := db.Where("prefix_hash IN ?", toLocalCheckPrefixes).
-			Find(&hashEntries).Error; err != nil {
-			pterm.Error.Println(err)
-			return nil, err
-		}
-	}
-
-	for _, hashEntry := range hashEntries {
-		existingHashes[hashEntry.PrefixHash] = true
-	}
-
-	return existingHashes, nil
+	return safeUrls, unsafePrefixes, nil
 }

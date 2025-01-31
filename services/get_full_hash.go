@@ -3,18 +3,16 @@ package services
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/pterm/pterm"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -27,7 +25,7 @@ const (
 	PlatformTypes    = "ANY_PLATFORM"
 	ThreatEntryTypes = "URL"
 
-	FULL_HASH_URL   = "https://safebrowsing.googleapis.com/v4/fullHashes:find?key="
+	FULL_HASH_URL = "https://safebrowsing.googleapis.com/v4/fullHashes:find?key="
 )
 
 type ThreatInfo struct {
@@ -71,9 +69,9 @@ type FullHashResponse struct {
 	NegativeCacheDuration string        `json:"negativeCacheDuration"`
 }
 
-func GetMatchingFullHashes(db *gorm.DB, rdb *redis.Client, prefixes []string) (map[string][]ThreatEntry, error) {
+func GetMatchingFullHashes(ctx context.Context, db *gorm.DB, rdb *redis.Client, prefixMap map[string]string) (map[string]string, error) {
 	var threatEntries []ThreatEntry
-	for _, prefix := range prefixes {
+	for prefix := range prefixMap {
 		threatEntries = append(threatEntries, ThreatEntry{Hash: prefix})
 	}
 
@@ -91,50 +89,27 @@ func GetMatchingFullHashes(db *gorm.DB, rdb *redis.Client, prefixes []string) (m
 		},
 	}
 
-	serverFullHashes, err := AskGoogleForFullHashes(payload)
+	matchingFullHashes, err := AskGoogleForFullHashes(payload)
 	if err != nil {
 		return nil, err
 	}
 
-	ctx := context.Background()
-	err = rdb.SAdd(ctx, "prefixHashes", prefixes).Err()
-	if err != nil {
-		pterm.Error.Printf("error adding prefix hashes to cache: %v", err)
-	}
-
-	response := make(map[string][]ThreatEntry)
+	unsafeUrls := make(map[string]string)
 	pipe := rdb.Pipeline()
-	for _, match := range serverFullHashes.Matches {
+
+	for _, match := range matchingFullHashes.Matches {
 		cacheDuration, err := time.ParseDuration(match.CacheDuration)
 		if err == nil {
-			pipe.Set(ctx, "fullHash:"+match.Threat.Hash, match.ThreatType, cacheDuration)
+			pipe.Set(ctx, match.Threat.Hash, match.ThreatType, cacheDuration)
 		}
-		response[match.Threat.Hash] = append(response[match.Threat.Hash], match.Threat)
+		unsafeUrls[match.Threat.Hash] = match.ThreatType
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		pterm.Error.Println("error executing pipeline")
+		log.Println("error caching the matching full hashes")
 	}
 
-	return response, nil
-}
-
-func GeneratePrefixHash(fullHashes []string) (map[string]string, error) {
-	response := make(map[string]string)
-
-	for _, fullHash := range fullHashes {
-		hashBytes, err := base64.StdEncoding.DecodeString(fullHash)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(hashBytes) < prefixSize {
-			return nil, errors.New("hash is too short")
-		}
-		response[fullHash] = base64.StdEncoding.EncodeToString(hashBytes[:prefixSize])
-	}
-
-	return response, nil
+	return unsafeUrls, nil
 }
 
 func AskGoogleForFullHashes(payload interface{}) (*FullHashResponse, error) {
@@ -165,31 +140,4 @@ func AskGoogleForFullHashes(payload interface{}) (*FullHashResponse, error) {
 	}
 
 	return &response, nil
-}
-
-func CompareFullHashes(urls []string, serverHashes map[string][]ThreatEntry) map[string]bool {
-	response := make(map[string]bool)
-	for _, url := range urls {
-		isSafe := true
-		for _, serverHash := range serverHashes[url] {
-			if url == serverHash.Hash {
-				isSafe = false
-				break
-			}
-		}
-		response[url] = isSafe
-	}
-	return response
-}
-
-func GetThreatInfoFromCache(rdb *redis.Client, fullHashes []string, threatType map[string]string) error {
-	for _, fullHash := range fullHashes {
-		threat, err := rdb.Get(rdb.Context(), "fullHash:"+fullHash).Result()
-		if err != nil && err != redis.Nil {
-			return err
-		}
-		threatType[fullHash] = threat
-	}
-
-	return nil
 }

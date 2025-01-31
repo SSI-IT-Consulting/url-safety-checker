@@ -2,20 +2,22 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+
 	"net/http"
 	"os"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/minodr/url-safety-checker.git/models"
-	"github.com/pterm/pterm"
+	"github.com/SSI-IT-Consulting/url-safety-checker.git/models"
+	"github.com/redis/go-redis/v9"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -95,8 +97,8 @@ type PrefixHashResponse struct {
 	MinimumWaitDuration string               `json:"minimumWaitDuration"`
 }
 
-func CreateListUpdateRequest(rdb *redis.Client, threatType string) ListUpdateRequest {
-	currentState, err := rdb.Get(rdb.Context(), "state:"+threatType).Result()
+func CreateListUpdateRequest(ctx context.Context, rdb *redis.Client, threatType string) ListUpdateRequest {
+	currentState, err := rdb.Get(ctx, "state:"+threatType).Result()
 	if err != nil {
 		log.Fatalf("error getting state for %s: %v", threatType, err)
 	}
@@ -114,7 +116,7 @@ func CreateListUpdateRequest(rdb *redis.Client, threatType string) ListUpdateReq
 	}
 }
 
-func GetPrefixHashes(db *gorm.DB, rdb *redis.Client) error {
+func GetPrefixHashes(ctx context.Context, db *gorm.DB, rdb *redis.Client) error {
 	for {
 		payload := PrefixHashRequest{
 			Client: Client{
@@ -122,50 +124,52 @@ func GetPrefixHashes(db *gorm.DB, rdb *redis.Client) error {
 				ClientVersion: CLIENT_VERSION,
 			},
 			ListUpdateRequests: []ListUpdateRequest{
-				CreateListUpdateRequest(rdb, "MALWARE"),
-				CreateListUpdateRequest(rdb, "SOCIAL_ENGINEERING"),
-				CreateListUpdateRequest(rdb, "UNWANTED_SOFTWARE"),
+				CreateListUpdateRequest(ctx, rdb, "MALWARE"),
+				CreateListUpdateRequest(ctx, rdb, "SOCIAL_ENGINEERING"),
+				CreateListUpdateRequest(ctx, rdb, "UNWANTED_SOFTWARE"),
 			},
 		}
 
-		response, err := AskGoogleForHashPrefixes(payload)
+		response, err := AskGoogleForHashPrefixes(ctx, payload)
 		if err != nil {
-			return fmt.Errorf("error getting prefix hashes: %v", err)
+			return fmt.Errorf("error getting prefix hashes: %s", err)
 		}
 
 		pipe := rdb.Pipeline()
+
 		for _, res := range response.ListUpdateResponses {
 			for _, rawHashes := range res.Additions {
 				decodedHash, _ := base64.StdEncoding.DecodeString(rawHashes.RawHashes.RawHashes)
-				SavePrefixHashes(db, rdb, decodedHash, rawHashes.RawHashes.PrefixSize)
+				SavePrefixHashes(ctx, db, rdb, decodedHash, rawHashes.RawHashes.PrefixSize)
 			}
 
 			for _, removal := range res.Removals {
-				RemovePrefixHashes(db, removal.RawIndices.Indices)
+				RemovePrefixHashes(ctx, db, removal.RawIndices.Indices)
 			}
 
-			pipe.Set(rdb.Context(), "state:"+res.ThreatType, res.NewClientState, 0)
+			pipe.Set(ctx, "state:"+res.ThreatType, res.NewClientState, 0)
 		}
 
-		if _, err := pipe.Exec(rdb.Context()); err != nil {
-			pterm.Error.Println("error executing pipeline")
+		if _, err := pipe.Exec(ctx); err != nil {
+			fmt.Errorf("error executing pipeline")
 		}
 
 		if len(response.ListUpdateResponses) == 0 {
 			break
 		}
+
 		time.Sleep(backOffInterval)
 	}
 
 	return nil
 }
 
-func RemovePrefixHashes(db *gorm.DB, rawIndices []int) {
+func RemovePrefixHashes(ctx context.Context, db *gorm.DB, rawIndices []int) {
 	wg := &sync.WaitGroup{}
 	indexChannel := make(chan int, numWorkers)
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go RemoveWorker(db, indexChannel, wg)
+		go RemoveWorker(ctx, db, indexChannel, wg)
 	}
 
 	for _, idx := range rawIndices {
@@ -174,10 +178,9 @@ func RemovePrefixHashes(db *gorm.DB, rawIndices []int) {
 
 	close(indexChannel)
 	wg.Wait()
-
 }
 
-func RemoveWorker(db *gorm.DB, indexChan <-chan int, wg *sync.WaitGroup) {
+func RemoveWorker(ctx context.Context, db *gorm.DB, indexChan <-chan int, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	var buffer []int
@@ -188,7 +191,7 @@ func RemoveWorker(db *gorm.DB, indexChan <-chan int, wg *sync.WaitGroup) {
 			if err := db.Clauses(clause.OnConflict{DoNothing: true}).
 				Where("index IN ?", buffer).Delete(&models.HashEntries{}).
 				Error; err != nil {
-				pterm.Error.Printf("failed to remove batch: %v\n", err)
+				fmt.Errorf("failed to remove batch: %s", err)
 			}
 			buffer = buffer[:0]
 		}
@@ -198,20 +201,20 @@ func RemoveWorker(db *gorm.DB, indexChan <-chan int, wg *sync.WaitGroup) {
 		if err := db.Clauses(clause.OnConflict{DoNothing: true}).
 			Where("index IN ?", buffer).Delete(&models.HashEntries{}).
 			Error; err != nil {
-			pterm.Error.Printf("failed to remove batch: %v\n", err)
+			fmt.Errorf("failed to remove batch: %v\n", err)
 		}
 	}
 }
 
-func SavePrefixHashes(db *gorm.DB, rdb *redis.Client, prefixHashes []byte, prefixSize int) {
+func SavePrefixHashes(ctx context.Context, db *gorm.DB, rdb *redis.Client, prefixHashes []byte, prefixSize int) {
 	wg := &sync.WaitGroup{}
 	prefixChannel := make(chan *DataEntry, numWorkers)
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go AddWorker(db, prefixChannel, wg)
+		go AddWorker(ctx, db, prefixChannel, wg)
 	}
 
-	position, err := rdb.Get(rdb.Context(), "idx").Result()
+	position, err := rdb.Get(ctx, "idx").Result()
 	idx := 0
 	if err == nil {
 		idx, _ = strconv.Atoi(position)
@@ -224,13 +227,13 @@ func SavePrefixHashes(db *gorm.DB, rdb *redis.Client, prefixHashes []byte, prefi
 		prefixChannel <- &DataEntry{Hash: []byte(encodedPrefix), Index: uint(idx)}
 	}
 
-	rdb.Set(rdb.Context(), "idx", idx, 0)
+	rdb.Set(ctx, "idx", idx, 0)
 
 	close(prefixChannel)
 	wg.Wait()
 }
 
-func AddWorker(db *gorm.DB, prefixChan <-chan *DataEntry, wg *sync.WaitGroup) {
+func AddWorker(ctx context.Context, db *gorm.DB, prefixChan <-chan *DataEntry, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	var buffer []models.HashEntries
@@ -243,7 +246,7 @@ func AddWorker(db *gorm.DB, prefixChan <-chan *DataEntry, wg *sync.WaitGroup) {
 		if len(buffer) >= batchSize {
 			if err := db.Clauses(clause.OnConflict{DoNothing: true}).
 				CreateInBatches(buffer, batchSize).Error; err != nil {
-				pterm.Error.Printf("failed to insert batch: %v\n", err)
+				fmt.Errorf("failed to insert batch: %v\n", err)
 			}
 			buffer = buffer[:0]
 		}
@@ -252,12 +255,12 @@ func AddWorker(db *gorm.DB, prefixChan <-chan *DataEntry, wg *sync.WaitGroup) {
 	if len(buffer) > 0 {
 		if err := db.Clauses(clause.OnConflict{DoNothing: true}).
 			CreateInBatches(buffer, batchSize).Error; err != nil {
-			pterm.Error.Printf("failed to insert batch: %v\n", err)
+			fmt.Errorf("failed to insert batch: %v\n", err)
 		}
 	}
 }
 
-func AskGoogleForHashPrefixes(payload interface{}) (*PrefixHashResponse, error) {
+func AskGoogleForHashPrefixes(ctx context.Context, payload interface{}) (*PrefixHashResponse, error) {
 	req, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling request payload: %v", err)
@@ -285,4 +288,22 @@ func AskGoogleForHashPrefixes(payload interface{}) (*PrefixHashResponse, error) 
 	}
 
 	return &response, nil
+}
+
+func GeneratePrefixHash(ctx context.Context, fullHashes []string) ([]string, error) {
+	prefixes := make([]string, 0)
+
+	for _, fullHash := range fullHashes {
+		hashBytes, err := base64.StdEncoding.DecodeString(fullHash)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(hashBytes) < prefixSize {
+			return nil, errors.New("hash is too short")
+		}
+		prefixes = append(prefixes, base64.StdEncoding.EncodeToString(hashBytes[:prefixSize]))
+	}
+
+	return prefixes, nil
 }
