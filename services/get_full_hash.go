@@ -102,7 +102,8 @@ func GetMatchingFullHashes(ctx context.Context, db *gorm.DB, rdb *redis.Client, 
 		if err == nil {
 			pipe.Set(ctx, match.Threat.Hash, match.ThreatType, cacheDuration)
 		}
-		unsafeUrls[match.Threat.Hash] = match.ThreatType
+		threatType := fmt.Sprintf("google:%s", match.ThreatType)
+		unsafeUrls[match.Threat.Hash] = threatType
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {

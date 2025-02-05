@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/SSI-IT-Consulting/url-safety-checker.git/config"
@@ -25,11 +27,18 @@ func main() {
 	if len(os.Args) > 1 {
 		for i := 1; i < len(os.Args); i++ {
 			go func(filename string) {
-				err := services.LoadAndStoreURLs(ctx, rdb, filename)
+				ext := strings.ToLower(filepath.Ext(filename))
+				var err error
+				if ext == ".csv" {
+					err = services.LoadCSVAndStoreURLs(ctx, rdb, filename)
+				} else {
+					err = services.LoadTXTAndStoreURLs(ctx, rdb, filename)
+				}
 				if err != nil {
 					log.Printf("Error loading URLs from file %s: %v", filename, err)
 				}
 			}(os.Args[i])
+
 			log.Printf("Started loading and storing URLs from file: %s", os.Args[i])
 		}
 	}
