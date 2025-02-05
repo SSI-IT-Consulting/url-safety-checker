@@ -34,21 +34,23 @@ func LoadTXTAndStoreURLs(ctx context.Context, rdb *redis.Client, filename string
 			continue // Skip empty lines
 		}
 
-		canonicalizedURL, err := canonicalizeURL(rawURL)
-		if err != nil {
-			log.Printf("Skipping invalid URL (%s): %v\n", rawURL, err)
-			continue
+		if isValidURL(rawURL) {
+			canonicalizedURL, err := canonicalizeURL(rawURL)
+			if err != nil {
+				log.Printf("Skipping invalid URL (%s): %v\n", rawURL, err)
+				continue
+			}
+
+			// Hash URL for better storage key format
+			hash := sha256.Sum256([]byte(canonicalizedURL))
+			encodedHash := base64.StdEncoding.EncodeToString(hash[:])
+
+			log.Println(canonicalizedURL, encodedHash)
+
+			threatInfo := fmt.Sprintf("%s:BLACKLISTED_URL", filename)
+			pipe.SetNX(ctx, encodedHash, threatInfo, 0)
+			count++
 		}
-
-		// Hash URL for better storage key format
-		hash := sha256.Sum256([]byte(canonicalizedURL))
-		encodedHash := base64.StdEncoding.EncodeToString(hash[:])
-
-		log.Println(canonicalizedURL, encodedHash)
-
-		threatInfo := fmt.Sprintf("%s:BLACKLISTED_URL", filename)
-		pipe.SetNX(ctx, encodedHash, threatInfo, 0)
-		count++
 
 		if count%1000 == 0 {
 			if _, err := pipe.Exec(ctx); err != nil {
